@@ -21,7 +21,7 @@ import requests
 from nacl.signing import SigningKey, VerifyKey
 
 # config / defaults
-NODE = os.environ.get("SAMMAN_NODE", "http://127.0.0.1:8080")
+NODE = os.environ.get("SAMMAN_NODE", "http://127.0.0.1:7742")
 KEYDIR = Path.home() / ".sammanet"
 KEYDIR.mkdir(parents=True, exist_ok=True)
 KEYFILE = KEYDIR / "keypair.json"
