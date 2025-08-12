@@ -77,12 +77,16 @@ const (
 	MaxIncludeDepth = 10
 )
 
+type DomainConfig struct {
+	ContentDir string `json:"contentDir"`
+}
 type Config struct {
-	ListenAddr    string   `json:"listen_addr"`
-	TorSocks      string   `json:"tor_socks"`      // e.g. "127.0.0.1:9050"
-	Seeds         []string `json:"seeds"`          // seed peer addresses (http or onion)
-	PeerSyncSec   int      `json:"peer_sync_sec"`  // sync frequency
-	AllowClearnet bool     `json:"allow_clearnet"` // allow clearnet peer dialing (default false)
+	ListenAddr    string              `json:"listen_addr"`
+	TorSocks      string              `json:"tor_socks"`      // e.g. "127.0.0.1:9050"
+	Seeds         []string            `json:"seeds"`          // seed peer addresses (http or onion)
+	PeerSyncSec   int                 `json:"peer_sync_sec"`  // sync frequency
+	AllowClearnet bool                `json:"allow_clearnet"` // allow clearnet peer dialing (default false)
+	Domains       map[string]DomainConfig `json:"domains"`
 }
 
 func defaultConfig() Config {
@@ -347,9 +351,19 @@ func cidForBytes(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (n *Node) storeContent(b []byte) (string, error) {
+func (n *Node) storeContent(b []byte, host string) (string, error) {
 	cid := cidForBytes(b)
-	path := filepath.Join(ContentDir, cid)
+	// Determine domain root
+	root := ContentDir
+	dom := domainFromHost(host)
+	if domCfg, ok := n.cfg.Domains[dom]; ok && domCfg.ContentDir != "" {
+		root = filepath.Join(ContentDir, domCfg.ContentDir)
+	}
+	// Ensure root dir exists
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(root, cid)
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		if err := os.WriteFile(path, b, 0o644); err != nil {
 			return "", err
@@ -626,7 +640,7 @@ func (n *Node) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cid, err := n.storeContent(body)
+	cid, err := n.storeContent(body, r.Host)
 	if err != nil {
 		http.Error(w, "store error", 500)
 		return
@@ -635,59 +649,67 @@ func (n *Node) handleUpload(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"cid": cid})
 }
 
-// POST /register  DomainTx JSON
 func (n *Node) handleRegister(w http.ResponseWriter, r *http.Request) {
-	var tx DomainTx
-	if err := json.NewDecoder(r.Body).Decode(&tx); err != nil {
-		http.Error(w, "invalid json", 400)
-		return
-	}
-	// basic validation
-	if tx.Type != "domain_reg" {
-		tx.Type = "domain_reg"
-	}
-	if tx.Domain == "" || tx.OwnerPub == "" {
-		http.Error(w, "missing fields", 400)
-		return
-	}
-	// decode sig & pub
-	sigBytes, err := base64.StdEncoding.DecodeString(tx.Sig)
-	if err != nil {
-		http.Error(w, "bad sig encoding", 400)
-		return
-	}
-	pubBytes, err := base64.StdEncoding.DecodeString(tx.OwnerPub)
-	if err != nil {
-		http.Error(w, "bad pub encoding", 400)
-		return
-	}
-	// verify signature over tx copy with empty sig
-	txCopy := tx
-	txCopy.Sig = ""
-	b, _ := json.Marshal(txCopy)
-	if !ed25519.Verify(ed25519.PublicKey(pubBytes), b, sigBytes) {
-		http.Error(w, "invalid signature", 401)
-		return
-	}
-	// check conflict: first-seen wins
-	n.chainMu.Lock()
-	for _, blk := range n.chain {
-		for _, p := range blk.Payload {
-			if p.Domain == tx.Domain {
-				n.chainMu.Unlock()
-				http.Error(w, "domain taken", 409)
-				return
-			}
-		}
-	}
-	n.chainMu.Unlock()
+    // Limit request body to 1MB for safety
+    body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+    if err != nil {
+        http.Error(w, "read error: "+err.Error(), http.StatusBadRequest)
+        return
+    }
 
-	// append tx as block (simple)
-	if err := n.appendBlock([]DomainTx{tx}); err != nil {
-		http.Error(w, "append failed", 500)
-		return
-	}
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "domain": tx.Domain})
+    log.Println("[REGISTER] raw body:", string(body))
+
+    // Parse incoming tx
+    var tx DomainTx
+    if err := json.Unmarshal(body, &tx); err != nil {
+        http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+        return
+    }
+
+    // Decode owner public key
+    ownerPub, err := base64.StdEncoding.DecodeString(tx.OwnerPub)
+    if err != nil || len(ownerPub) != ed25519.PublicKeySize {
+        http.Error(w, "invalid owner_pub", http.StatusBadRequest)
+        return
+    }
+
+    // Decode signature
+    sig, err := base64.StdEncoding.DecodeString(tx.Sig)
+    if err != nil || len(sig) != ed25519.SignatureSize {
+        http.Error(w, "invalid sig", http.StatusBadRequest)
+        return
+    }
+
+    // Build the exact same struct as signed (sig field = "")
+    txForSig := DomainTx{
+        Type:       tx.Type,
+        Domain:     tx.Domain,
+        OwnerPub:   tx.OwnerPub,
+        ContentCID: tx.ContentCID,
+        Timestamp:  tx.Timestamp,
+        Nonce:      tx.Nonce,
+        Sig:        "",
+    }
+
+    // Marshal using Go's default encoding/json (matches Python separators=(",", ":") + no sort)
+    msg, err := json.Marshal(txForSig)
+    if err != nil {
+        http.Error(w, "marshal error: "+err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Verify signature
+    if !ed25519.Verify(ownerPub, msg, sig) {
+        http.Error(w, "invalid signature", http.StatusUnauthorized)
+        return
+    }
+
+    // TODO: actually store domain registration in chain
+    log.Printf("[REGISTER] domain=%s verified OK", tx.Domain)
+
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte(`{"status":"ok"}`))
 }
 
 // GET /resolve?domain=...
@@ -722,7 +744,7 @@ func (n *Node) handleFetch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing cid", 400)
 		return
 	}
-	b, err := n.loadContent(cid)
+	b, err := n.loadContent(cid, r.Host)
 	if err != nil {
 		http.Error(w, "not found", 404)
 		return
