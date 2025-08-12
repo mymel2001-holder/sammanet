@@ -873,10 +873,7 @@ func (n *Node) RunWasmWithFuel(wasmBytes []byte, cid string, fuel uint64, timeou
 		if mem == nil {
 			return "", fmt.Errorf("no memory")
 		}
-		data, ok := mem.UnsafeData(store)
-		if !ok {
-			return "", fmt.Errorf("cannot access memory")
-		}
+		data := mem.UnsafeData(store)
 		start := int(ptr)
 		end := start + int(length)
 		if start < 0 || end > len(data) {
@@ -896,7 +893,7 @@ func (n *Node) RunWasmWithFuel(wasmBytes []byte, cid string, fuel uint64, timeou
 			logs.WriteByte('\n')
 		}
 	}
-	if err := linker.DefineFunc("env", "log", logFunc); err != nil {
+	if err := linker.DefineFunc(store, "env", "log", logFunc); err != nil {
 		return "", err
 	}
 
@@ -909,7 +906,7 @@ func (n *Node) RunWasmWithFuel(wasmBytes []byte, cid string, fuel uint64, timeou
 		n.storageMu.Lock()
 		v := n.storage[cid][k]
 		n.storageMu.Unlock()
-		data, _ := mem.UnsafeData(store)
+		data := mem.UnsafeData(store)
 		off := int(outPtr)
 		if off+4 > len(data) {
 			return 0
@@ -926,7 +923,7 @@ func (n *Node) RunWasmWithFuel(wasmBytes []byte, cid string, fuel uint64, timeou
 		copy(data[off+4:off+4+len(v)], []byte(v))
 		return 1
 	}
-	if err := linker.DefineFunc("env", "storage_get", storageGet); err != nil {
+	if err := linker.DefineFunc(store, "env", "storage_get", storageGet); err != nil {
 		return "", err
 	}
 
@@ -945,7 +942,7 @@ func (n *Node) RunWasmWithFuel(wasmBytes []byte, cid string, fuel uint64, timeou
 		n.storageMu.Unlock()
 		return 1
 	}
-	if err := linker.DefineFunc("env", "storage_put", storagePut); err != nil {
+	if err := linker.DefineFunc(store, "env", "storage_put", storagePut); err != nil {
 		return "", err
 	}
 
@@ -965,7 +962,7 @@ func (n *Node) RunWasmWithFuel(wasmBytes []byte, cid string, fuel uint64, timeou
 		defer res.Body.Close()
 		body, _ := io.ReadAll(res.Body)
 		s := string(body)
-		data, _ := mem.UnsafeData(store)
+		data := mem.UnsafeData(store)
 		off := int(outPtr)
 		if off+4 > len(data) {
 			return 0
@@ -981,7 +978,7 @@ func (n *Node) RunWasmWithFuel(wasmBytes []byte, cid string, fuel uint64, timeou
 		copy(data[off+4:off+4+len(s)], []byte(s))
 		return 1
 	}
-	if err := linker.DefineFunc("env", "fetch_samman", fetchSamman); err != nil {
+	if err := linker.DefineFunc(store, "env", "fetch_samman", fetchSamman); err != nil {
 		return "", err
 	}
 
