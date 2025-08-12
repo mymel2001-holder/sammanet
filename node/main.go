@@ -1,50 +1,34 @@
 // node/main.go
 //
-// Full-featured Sammanet node (prototype).
+// Full-featured Sammanet node (prototype) — single-file version with SML parsing/validation built-in.
 //
-// Features included in this single-file implementation:
+// Features:
 // - Content-addressed storage (SHA-256 CIDs) saved to disk (data/content/<cid>)
 // - Domain registration via signed DomainTx transactions appended to a gzipped append-only chain (data/chain.gz)
 // - Chain header signing/verification (ed25519) and simple "first-seen" resolution rule
 // - HTTP admin/API endpoints: /upload, /register, /resolve, /fetch, /peers, /chain
 // - Peer sync over Tor (SOCKS5) or plain HTTP; peer list gossip and chain syncing
-// - WASM sandbox execution via Wasmtime with fuel metering and safe host imports:
-//     env.log(ptr,len), env.storage_get(kptr,klen,outptr)->i32, env.storage_put(kp,kl,vp,vl)->i32, env.fetch_samman(cidPtr,cidLen,outPtr)->i32
+// - WASM sandbox execution via Wasmtime with fuel metering and safe host imports
 // - Basic Markdown rendering (blackfriday) for fetched pages (if content is not wasm)
-// - Local per-content persistent key-value store for wasm scripts (prototype)
+// - Built-in SML parser & upload pre-checks integrated (no separate sml package)
 //
-//
-// WARNING: This is a prototype for experimentation. Do NOT run untrusted wasm on sensitive machines
-// without additional hardening. The sandbox uses fuel metering and timeouts but is not a full-security boundary.
+// WARNING: Prototype code. Do NOT run untrusted wasm on sensitive machines without additional hardening.
 //
 // To build:
-//  - Create a go.mod in the same folder: `module sammanet`
-//  - Run `go get` for dependencies (listed in comments below) then `go build`.
-//
-// Dependencies you will need (example):
+//   go mod init sammanet
 //   go get github.com/bytecodealliance/wasmtime-go/v12
 //   go get golang.org/x/net/proxy
 //   go get go.etcd.io/bbolt
 //   go get github.com/russross/blackfriday/v2
+//   go get github.com/microcosm-cc/bluemonday
+//   go mod tidy && go build
 //
-// Put this file at node/main.go and run `go mod tidy && go build`
-//
-// Run node:
-//   ./sammanode -config config.json
-//
-// Example config.json (optional):
-// {
-//   "listen_addr": "127.0.0.1:8080",
-//   "tor_socks": "127.0.0.1:9050",
-//   "seeds": ["http://127.0.0.1:8081"],
-//   "peer_sync_sec": 30
-// }
-
 package main
 
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -54,6 +38,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"io/ioutil"
 	"log"
@@ -61,6 +46,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -71,6 +57,7 @@ import (
 	"golang.org/x/net/proxy"
 
 	blackfriday "github.com/russross/blackfriday/v2"
+	"github.com/microcosm-cc/bluemonday"
 )
 
 // ------------------ Config & Constants ------------------
@@ -82,22 +69,28 @@ const (
 	ChainFile         = "data/chain.gz"
 	KeyFile           = "data/nodekey.bin"
 	DBFile            = "data/samman.db"
+
+	// directory used for resolving @include local files (matches client defaults)
+	IncludeDir = "includes"
+
+	// recursion guard for includes
+	MaxIncludeDepth = 10
 )
 
 type Config struct {
-	ListenAddr   string   `json:"listen_addr"`
-	TorSocks     string   `json:"tor_socks"`     // e.g. "127.0.0.1:9050"
-	Seeds        []string `json:"seeds"`         // seed peer addresses (http or onion)
-	PeerSyncSec  int      `json:"peer_sync_sec"` // sync frequency
-	AllowClearnet bool    `json:"allow_clearnet"`// allow clearnet peer dialing (default false)
+	ListenAddr    string   `json:"listen_addr"`
+	TorSocks      string   `json:"tor_socks"`      // e.g. "127.0.0.1:9050"
+	Seeds         []string `json:"seeds"`          // seed peer addresses (http or onion)
+	PeerSyncSec   int      `json:"peer_sync_sec"`  // sync frequency
+	AllowClearnet bool     `json:"allow_clearnet"` // allow clearnet peer dialing (default false)
 }
 
 func defaultConfig() Config {
 	return Config{
-		ListenAddr:   DefaultListenAddr,
-		TorSocks:     "127.0.0.1:9050",
-		Seeds:        []string{},
-		PeerSyncSec:  30,
+		ListenAddr:    DefaultListenAddr,
+		TorSocks:      "127.0.0.1:9050",
+		Seeds:         []string{},
+		PeerSyncSec:   30,
 		AllowClearnet: true,
 	}
 }
@@ -162,6 +155,10 @@ func ensureDirs() error {
 	if err := os.MkdirAll(DataDir, 0o755); err != nil {
 		return err
 	}
+	// include dir is where authors commonly keep local includes
+	if err := os.MkdirAll(IncludeDir, 0o755); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -199,7 +196,7 @@ func NewNode(cfg Config) (*Node, error) {
 		return nil, err
 	}
 	// open bolt db
-	db, err := bolt.Open(DBFile, 0o600, &bolt.Options{Timeout: 1 * time.Second})
+	db, err := bolt.Open(DBFILEorDefault(), 0o600, &bolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
 		return nil, err
 	}
@@ -244,6 +241,14 @@ func NewNode(cfg Config) (*Node, error) {
 		n.peersMu.Unlock()
 	}
 	return n, nil
+}
+
+// DB path helper (keeps original constant if present)
+func DBFILEorDefault() string {
+	if DBFile != "" {
+		return DBFile
+	}
+	return "data/samman.db"
 }
 
 func loadOrCreateKey(path string) (ed25519.PublicKey, ed25519.PrivateKey, error) {
@@ -358,6 +363,253 @@ func (n *Node) loadContent(cid string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// ------------------ SML parsing & upload pre-checks (built-in) ------------------
+
+// directive regexes (used both for validation & parsing)
+var (
+	reInclude    = regexp.MustCompile(`@include\(\s*([^)]+?)\s*\)`)
+	reFetch      = regexp.MustCompile(`@fetch\(\s*([^)]+?)\s*\)`)
+	reWasmScript = regexp.MustCompile(`(?is)<script\s+[^>]*lang\s*=\s*"(?:wasm|WASM)"[^>]*src\s*=\s*"(wasm_cid:[^"]+)"[^>]*>.*?</script>`)
+	reStyle      = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
+)
+
+// Resolve a target like the Python client: absolute, includes/, data/content/, raw, with .sml
+func resolveTargetLocal(target string) string {
+	t := strings.TrimSpace(target)
+	if (strings.HasPrefix(t, "\"") && strings.HasSuffix(t, "\"")) || (strings.HasPrefix(t, "'") && strings.HasSuffix(t, "'")) {
+		t = t[1 : len(t)-1]
+	}
+	cands := []string{}
+	if filepath.IsAbs(t) {
+		cands = append(cands, t)
+	}
+	cands = append(cands, filepath.Join(IncludeDir, t))
+	cands = append(cands, filepath.Join(ContentDir, t))
+	cands = append(cands, t)
+	if !strings.HasSuffix(strings.ToLower(t), ".sml") {
+		cands = append(cands, filepath.Join(IncludeDir, t+".sml"))
+		cands = append(cands, filepath.Join(ContentDir, t+".sml"))
+		cands = append(cands, t+".sml")
+	}
+	for _, c := range cands {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			ab, _ := filepath.Abs(c)
+			return ab
+		}
+	}
+	return ""
+}
+
+// detectLoopsFromPath scans a file recursively for @include/@fetch loops and missing includes.
+// visited map holds currently-in-stack keys (absolute paths and optional synthetic tokens).
+func detectLoopsFromPath(path string, visited map[string]bool, depth int) error {
+	if visited == nil {
+		visited = make(map[string]bool)
+	}
+	if depth > MaxIncludeDepth {
+		return fmt.Errorf("maximum include/fetch depth of %d exceeded starting from %s", MaxIncludeDepth, path)
+	}
+	ab, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("invalid path %s: %v", path, err)
+	}
+	if visited[ab] {
+		return fmt.Errorf("circular reference detected at %s", path)
+	}
+	fi, err := os.Stat(ab)
+	if err != nil || fi.IsDir() {
+		return fmt.Errorf("file not found: %s", path)
+	}
+	visited[ab] = true
+	defer func() {
+		delete(visited, ab)
+	}()
+
+	data, err := os.ReadFile(ab)
+	if err != nil {
+		return fmt.Errorf("error reading %s: %v", path, err)
+	}
+	s := string(data)
+	// includes
+	for _, m := range reInclude.FindAllStringSubmatch(s, -1) {
+		if len(m) < 2 {
+			return fmt.Errorf("malformed include in %s", path)
+		}
+		tgt := m[1]
+		resolved := resolveTargetLocal(tgt)
+		if resolved == "" {
+			return fmt.Errorf("include target not found locally: %s (referenced from %s)", tgt, path)
+		}
+		if err := detectLoopsFromPath(resolved, visited, depth+1); err != nil {
+			return err
+		}
+	}
+	// fetches
+	for _, m := range reFetch.FindAllStringSubmatch(s, -1) {
+		if len(m) < 2 {
+			return fmt.Errorf("malformed fetch in %s", path)
+		}
+		tgt := m[1]
+		resolved := resolveTargetLocal(tgt)
+		if resolved != "" {
+			if err := detectLoopsFromPath(resolved, visited, depth+1); err != nil {
+				return err
+			}
+		} else {
+			// Not found locally: treat as CID/external. We can't expand it here,
+			// but detect trivial synthetic cycles if the synthetic token is already in visited.
+			synth := "cid:" + tgt
+			if visited[synth] {
+				return fmt.Errorf("circular reference detected via CID-like token %s", tgt)
+			}
+			// don't add permanently (no further expansion)
+		}
+	}
+	return nil
+}
+
+// checkSMLBytes writes bytes to a temp file and runs loop detection if it looks like SML.
+func checkSMLBytes(b []byte) error {
+	s := string(b)
+	if !strings.Contains(s, "@include(") && !strings.Contains(s, "@fetch(") {
+		return nil
+	}
+	cid := cidForBytes(b)
+	tmp := filepath.Join(os.TempDir(), "samman_sml_"+cid+".sml")
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return fmt.Errorf("temp write failed: %v", err)
+	}
+	defer os.Remove(tmp)
+	if err := detectLoopsFromPath(tmp, nil, 0); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ------------------ SML parser (inlined) ------------------
+
+// ParseOptions provide callbacks for resolving @fetch and @include and control options.
+type ParseOptions struct {
+	// FetchByCID should return raw bytes for a CID (e.g., wasm or other content).
+	// If nil, @fetch directives will be left as an explanatory comment.
+	FetchByCID func(cid string) ([]byte, error)
+
+	// IncludeResolver should return raw SML/markdown bytes for include(domain/path).
+	// If nil, @include directives will be replaced with a comment noting unresolved include.
+	IncludeResolver func(domainPath string) ([]byte, error)
+
+	// AllowInlineHTML toggles whether small inline HTML tags are allowed (default true).
+	AllowInlineHTML bool
+}
+
+// default policy: allow inline HTML and style blocks
+func defaultPolicy() *bluemonday.Policy {
+	p := bluemonday.UGCPolicy()
+	// allow style tags (contents will be kept as-is)
+	p.AllowElements("style")
+	// allow the <samman-wasm> placeholder with src attr
+	p.AllowElements("samman-wasm")
+	p.AllowAttrs("src").OnElements("samman-wasm")
+	// keep class/id attributes on divs/spans for future use
+	p.AllowAttrs("class").Globally()
+	p.AllowAttrs("id").Globally()
+	return p
+}
+
+// ParseSML parses an SML document and returns sanitized HTML.
+// It expands directives via callbacks and renders Markdown via blackfriday.
+func ParseSML(input []byte, opts ParseOptions) (string, error) {
+	// default opts
+	if opts.FetchByCID == nil {
+		opts.FetchByCID = func(cid string) ([]byte, error) {
+			return nil, fmt.Errorf("fetch handler not configured")
+		}
+	}
+	if opts.IncludeResolver == nil {
+		opts.IncludeResolver = func(domainPath string) ([]byte, error) {
+			return nil, fmt.Errorf("include handler not configured")
+		}
+	}
+
+	// Step 1: Preprocess: extract style blocks and preserve them
+	styles := []string{}
+	content := string(input)
+	content = reStyle.ReplaceAllStringFunc(content, func(s string) string {
+		styles = append(styles, s)
+		// placeholder inserted and styles will be appended after render
+		return fmt.Sprintf("\n\n<!--__SML_STYLE_PLACEHOLDER_%d__-->\n\n", len(styles)-1)
+	})
+
+	// Step 2: Process wasm <script lang="wasm" src="wasm_cid:..."> tags:
+	// replace them with a safe placeholder element <samman-wasm src="wasm_cid:..."></samman-wasm>
+	content = reWasmScript.ReplaceAllStringFunc(content, func(s string) string {
+		match := reWasmScript.FindStringSubmatch(s)
+		if len(match) >= 2 {
+			src := html.EscapeString(match[1])
+			return fmt.Sprintf(`<samman-wasm src="%s"></samman-wasm>`, src)
+		}
+		return ""
+	})
+
+	// Step 3: Process @include directives (may be many)
+	content = reInclude.ReplaceAllStringFunc(content, func(m string) string {
+		sub := reInclude.FindStringSubmatch(m)
+		if len(sub) < 2 {
+			return fmt.Sprintf("<!-- malformed include: %s -->", html.EscapeString(m))
+		}
+		dpath := sub[1]
+		b, err := opts.IncludeResolver(dpath)
+		if err != nil {
+			return fmt.Sprintf("<!-- include unresolved: %s -->", html.EscapeString(dpath))
+		}
+		// included content may itself be SML; render included content as markdown fragment
+		incHTML := string(blackfriday.Run(b))
+		return incHTML
+	})
+
+	// Step 4: Process @fetch(cid) directives
+	content = reFetch.ReplaceAllStringFunc(content, func(m string) string {
+		sub := reFetch.FindStringSubmatch(m)
+		if len(sub) < 2 {
+			return fmt.Sprintf("<!-- malformed fetch: %s -->", html.EscapeString(m))
+		}
+		cid := sub[1]
+		b, err := opts.FetchByCID(cid)
+		if err != nil {
+			return fmt.Sprintf("<!-- fetch unresolved: %s -->", html.EscapeString(cid))
+		}
+		// If the fetched bytes are wasm (magic) we leave a placeholder
+		if len(b) >= 4 && bytes.Equal(b[:4], []byte{0x00, 0x61, 0x73, 0x6d}) {
+			// create a saman-wasm placeholder
+			return fmt.Sprintf(`<samman-wasm src="%s"></samman-wasm>`, html.EscapeString("wasm_cid:"+cid))
+		}
+		// Otherwise treat as markdown/html: render markdown then insert
+		frag := string(blackfriday.Run(b))
+		return frag
+	})
+
+	// Step 5: Render Markdown -> HTML (blackfriday)
+	md := []byte(content)
+	htmlBytes := blackfriday.Run(md, blackfriday.WithExtensions(blackfriday.CommonExtensions|blackfriday.AutoHeadingIDs))
+	out := string(htmlBytes)
+
+	// Step 6: Re-insert preserved styles in place of placeholders
+	for i, s := range styles {
+		ph := fmt.Sprintf("<!--__SML_STYLE_PLACEHOLDER_%d__-->", i)
+		out = strings.ReplaceAll(out, ph, s)
+	}
+
+	// Step 7: Sanitize HTML with bluemonday
+	policy := defaultPolicy()
+	if !opts.AllowInlineHTML {
+		// if inline HTML not allowed, use UGCPolicy but strip style and custom elements
+		policy = bluemonday.UGCPolicy()
+	}
+	safe := policy.Sanitize(out)
+
+	return safe, nil
+}
+
 // ------------------ HTTP Handlers ------------------
 
 // POST /upload  (raw body) -> {"cid": "<cid">}
@@ -367,6 +619,13 @@ func (n *Node) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read error", 500)
 		return
 	}
+
+	// SML pre-checks: detect loops, missing includes, excessive depth
+	if err := checkSMLBytes(body); err != nil {
+		http.Error(w, "sml validation failed: "+err.Error(), 400)
+		return
+	}
+
 	cid, err := n.storeContent(body)
 	if err != nil {
 		http.Error(w, "store error", 500)
@@ -456,6 +715,7 @@ func (n *Node) handleResolve(w http.ResponseWriter, r *http.Request) {
 // If content is WASM (magic bytes), run wasm and return logs/plain text.
 // If content contains top marker "wasm_cid: <cid>" in first 4KB, fetch referenced wasm and run it,
 // then append wasm logs as an HTML comment to returned HTML.
+// If content looks like SML (includes/fetch or starts with markdown), ParseSML is used to render.
 func (n *Node) handleFetch(w http.ResponseWriter, r *http.Request) {
 	cid := r.URL.Query().Get("cid")
 	if cid == "" {
@@ -478,6 +738,7 @@ func (n *Node) handleFetch(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(logs))
 		return
 	}
+
 	// check for wasm_cid marker in first 4KB
 	head := b
 	if len(head) > 4096 {
@@ -492,29 +753,60 @@ func (n *Node) handleFetch(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if wasmCID == "" {
-		// render markdown to HTML (best-effort)
+
+	// If wasm_cid present -> fetch and run referenced wasm, append logs to rendered HTML
+	if wasmCID != "" {
+		wasmBytes, err := n.loadContent(wasmCID)
+		if err != nil {
+			http.Error(w, "wasm not found: "+wasmCID, 404)
+			return
+		}
+		logs, err := n.RunWasmWithFuel(wasmBytes, cid, 250_000, 3*time.Second)
+		if err != nil {
+			http.Error(w, "wasm run error: "+err.Error()+"\nlogs:\n"+logs, 500)
+			return
+		}
 		html := renderMarkdownToHTML(b)
+		out := html + "\n<!-- wasm logs:\n" + logs + "\n-->"
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(out))
+		return
+	}
+
+	// If content seems like SML/Markdown, attempt ParseSML with callbacks
+	str := string(b)
+	if strings.Contains(str, "@include(") || strings.Contains(str, "@fetch(") || strings.HasPrefix(strings.TrimSpace(str), "#") {
+		opts := ParseOptions{
+			AllowInlineHTML: true,
+			FetchByCID: func(cid string) ([]byte, error) {
+				return n.loadContent(cid)
+			},
+			IncludeResolver: func(domainPath string) ([]byte, error) {
+				res := resolveTargetLocal(domainPath)
+				if res != "" {
+					bs, err := os.ReadFile(res)
+					return bs, err
+				}
+				return nil, fmt.Errorf("include not found: %s", domainPath)
+			},
+		}
+		html, err := ParseSML(b, opts)
+		if err != nil {
+			// fallback to raw markdown
+			out := renderMarkdownToHTML(b)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(out))
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(html))
 		return
 	}
-	// fetch referenced wasm and run
-	wasmBytes, err := n.loadContent(wasmCID)
-	if err != nil {
-		http.Error(w, "wasm not found: "+wasmCID, 404)
-		return
-	}
-	logs, err := n.RunWasmWithFuel(wasmBytes, cid, 250_000, 3*time.Second)
-	if err != nil {
-		http.Error(w, "wasm run error: "+err.Error()+"\nlogs:\n"+logs, 500)
-		return
-	}
-	// return original rendered page and append logs in comment
+
+	// default: render markdown to HTML (best-effort)
 	html := renderMarkdownToHTML(b)
-	out := html + "\n<!-- wasm logs:\n" + logs + "\n-->"
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(out))
+	w.Write([]byte(html))
 }
 
 // GET /peers -> JSON list
@@ -663,9 +955,8 @@ func (n *Node) RunWasmWithFuel(wasmBytes []byte, cid string, fuel uint64, timeou
 		if err != nil {
 			return 0
 		}
-		url := fmt.Sprintf("http://%s/fetch?cid=%s", strings.ReplaceAll(getListenAddr(n), "http://", ""), cidS)
-		// but simpler: fetch local node via localhost to avoid complex listenaddr parsing
-		url = fmt.Sprintf("http://127.0.0.1:8080/fetch?cid=%s", cidS)
+		// fetch via localhost (simple, robust)
+		url := fmt.Sprintf("http://127.0.0.1:8080/fetch?cid=%s", cidS)
 		client := &http.Client{Timeout: 3 * time.Second}
 		res, err := client.Get(url)
 		if err != nil || res.StatusCode != 200 {
@@ -735,12 +1026,6 @@ func (n *Node) RunWasmWithFuel(wasmBytes []byte, cid string, fuel uint64, timeou
 	case <-time.After(timeout):
 		return logs.String(), fmt.Errorf("wasm execution timeout")
 	}
-}
-
-// helper to try to get listen address for embed fetch (not critical)
-func getListenAddr(n *Node) string {
-	// default
-	return "127.0.0.1:8080"
 }
 
 // ------------------ Peer sync over Tor (simple) ------------------

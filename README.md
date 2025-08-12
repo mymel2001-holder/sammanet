@@ -107,6 +107,20 @@ Expected output:
 42
 """
 
+## Example page:
+
+```
+# Welcome to sammanet!
+
+Sammanet uses a ***markdown-like language***....
+<style> body { font-family: sans-serif; } </style>
+
+Here is an embedded WASM script:
+<script lang="wasm" src="wasm_cid:Qm123abc..."></script>
+
+@include(my.melody/footer)
+```
+
 ## License
 
 MIT
