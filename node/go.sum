@@ -1,0 +1,4 @@
+github.com/bytecodealliance/wasmtime-go/v12 v12.0.0 h1:GULxPlF4NYsWItgLMvBLeK3KmBZnPKgXldwOxTpWqqY=
+github.com/bytecodealliance/wasmtime-go/v12 v12.0.0/go.mod h1:1xdxxMZpv9w0AgnjzKzPFFLbmT1hV2cA3cH+hgC+NIE=
+golang.org/x/crypto v0.23.0 h1:mA+q7jx6khmFQifE7Y9L5S87Q10UcJ52g1iT5t+6auQ=
+golang.org/x/crypto v0.23.0/go.mod h1:JD9Qe3R+6yCgjSKhgA+ANLHKhsqWZlHb/wo4OZ0kbjA=

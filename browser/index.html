@@ -1,0 +1,88 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <title>Sammanet Browser</title>
+    <style>
+      body{font-family:system-ui;margin:0;padding:12px}
+      .row{display:flex;gap:8px;margin-bottom:8px}
+      textarea{width:100%;height:200px}
+      iframe{width:100%;height:420px;border:1px solid #ccc}
+    </style>
+  </head>
+  <body>
+    <h2>Sammanet Browser</h2>
+    <div class="row">
+      <input id="domain" placeholder="domain (e.g. nodemixaholic)" />
+      <button id="resolveBtn">Resolve</button>
+      <button id="fetchBtn">Fetch by CID</button>
+      <span id="out"></span>
+    </div>
+
+    <div>
+      <h4>Upload Page (Markdown / HTML)</h4>
+      <textarea id="page"></textarea>
+      <div class="row">
+        <button id="uploadBtn">Upload</button>
+        <input id="owner" placeholder="owner pub (base64)" />
+        <button id="registerBtn">Register Domain</button>
+      </div>
+    </div>
+
+    <hr/>
+    <h4>Page Preview</h4>
+    <div>
+      <label><input type="checkbox" id="enableScript" /> Allow scripts (dangerous)</label>
+    </div>
+    <iframe id="preview" sandbox="allow-same-origin"></iframe>
+
+    <script>
+      const out = document.getElementById('out');
+      const domainEl = document.getElementById('domain');
+      const pageEl = document.getElementById('page');
+      const preview = document.getElementById('preview');
+      const enableScript = document.getElementById('enableScript');
+
+      document.getElementById('uploadBtn').onclick = async () => {
+        const content = pageEl.value;
+        const res = await window.samman.upload('', content);
+        out.innerText = JSON.stringify(res);
+      };
+      document.getElementById('resolveBtn').onclick = async () => {
+        const d = domainEl.value;
+        const r = await window.samman.resolve(d);
+        out.innerText = r.body;
+        try {
+          const tx = JSON.parse(r.body);
+          const cid = tx.content_cid;
+          const f = await window.samman.fetchCid(cid);
+          showPreview(f.body);
+        } catch(e){}
+      };
+      document.getElementById('fetchBtn').onclick = async () => {
+        const cid = prompt("CID:");
+        const f = await window.samman.fetchCid(cid);
+        showPreview(f.body);
+      };
+      document.getElementById('registerBtn').onclick = async () => {
+        // For prototyping, the user must create a properly signed tx externally (python client)
+        alert("Use the Python client to create & sign DomainTx, then paste JSON here.");
+        const txJson = prompt("Paste DomainTx JSON");
+        if (!txJson) return;
+        const tx = JSON.parse(txJson);
+        const r = await window.samman.register(tx);
+        out.innerText = JSON.stringify(r);
+      };
+
+      function showPreview(html) {
+        // control script allowance: if disabled, use sandbox no-scripts
+        if (enableScript.checked) {
+          preview.setAttribute('sandbox', 'allow-same-origin allow-scripts');
+        } else {
+          preview.setAttribute('sandbox', 'allow-same-origin');
+        }
+        preview.srcdoc = html;
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "listen_addr":"127.0.0.1:8080",
+  "seeds":["http://127.0.0.1:8081"],
+  "tor_socks":"127.0.0.1:9050",
+  "chain_path":"data/chain.gz",
+  "data_dir":"data",
+  "peer_sync_sec":30
+}
