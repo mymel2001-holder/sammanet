@@ -2,7 +2,7 @@
 const { ipcMain } = require('electron');
 const http = require('http');
 
-const NODE = process.env.SAMMAN_NODE || "http://127.0.0.1:8080";
+const NODE = process.env.SAMMAN_NODE || "http://127.0.0.1:7742";
 
 function jsonPost(path, obj) {
   return new Promise((res, rej) => {

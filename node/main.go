@@ -744,7 +744,7 @@ func (n *Node) handleFetch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing cid", 400)
 		return
 	}
-	b, err := n.loadContent(cid, r.Host)
+	b, err := n.loadContent(cid)
 	if err != nil {
 		http.Error(w, "not found", 404)
 		return
@@ -975,7 +975,7 @@ func (n *Node) RunWasmWithFuel(wasmBytes []byte, cid string, fuel uint64, timeou
 			return 0
 		}
 		// fetch via localhost (simple, robust)
-		url := fmt.Sprintf("http://127.0.0.1:8080/fetch?cid=%s", cidS)
+		url := fmt.Sprintf("http://127.0.0.1:7742/fetch?cid=%s", cidS)
 		client := &http.Client{Timeout: 3 * time.Second}
 		res, err := client.Get(url)
 		if err != nil || res.StatusCode != 200 {

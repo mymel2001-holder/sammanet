@@ -19,6 +19,7 @@ from pathlib import Path
 
 import requests
 from nacl.signing import SigningKey, VerifyKey
+from collections import OrderedDict
 
 # config / defaults
 NODE = os.environ.get("SAMMAN_NODE", "http://127.0.0.1:7742")
@@ -187,15 +188,15 @@ def register(domain, content_cid=""):
     sk, vk = loadkeys()
 
     # Build transaction with Go struct field order
-    tx = {
-        "type": "domain_reg",
-        "domain": domain,
-        "owner_pub": base64.b64encode(bytes(vk)).decode(),
-        "content_cid": content_cid,
-        "timestamp": int(time.time()),
-        "nonce": int(time.time() * 1000),
-        "sig": ""  # will be replaced after signing
-    }
+    tx = OrderedDict([
+        ("type", "domain_reg"),
+        ("domain", domain),
+        ("owner_pub", base64.b64encode(bytes(vk)).decode()),
+        ("content_cid", content_cid),
+        ("timestamp", int(time.time())),
+        ("nonce", int(time.time() * 1000)),
+        ("sig", "")
+    ])
 
     # Encode in exact Go encoding/json style: field order preserved, no spaces after commas/colons
     msg = json.dumps(tx, separators=(",", ":")).encode()
