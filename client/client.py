@@ -185,27 +185,32 @@ def upload(path):
 
 def register(domain, content_cid=""):
     sk, vk = loadkeys()
+
+    # Build transaction with Go struct field order
     tx = {
         "type": "domain_reg",
         "domain": domain,
         "owner_pub": base64.b64encode(bytes(vk)).decode(),
         "content_cid": content_cid,
         "timestamp": int(time.time()),
-        "nonce": int(time.time() * 1000)
+        "nonce": int(time.time() * 1000),
+        "sig": ""  # will be replaced after signing
     }
-    # sign tx (signature over JSON with empty sig)
-    tx_copy = dict(tx)
-    tx_copy["sig"] = ""
-    msg = json.dumps(tx_copy, separators=(",", ":"), sort_keys=True).encode()
+
+    # Encode in exact Go encoding/json style: field order preserved, no spaces after commas/colons
+    msg = json.dumps(tx, separators=(",", ":")).encode()
+
+    # Sign the canonical byte sequence
     sig = sk.sign(msg).signature
     tx["sig"] = base64.b64encode(sig).decode()
+
     try:
         r = requests.post(f"{NODE}/register", json=tx, timeout=10)
     except Exception as e:
         print(f"[ERROR] Register failed: {e}")
         return
     print("register:", r.status_code, r.text)
-
+    
 def resolve(domain):
     try:
         r = requests.get(f"{NODE}/resolve?domain={domain}", timeout=10)
