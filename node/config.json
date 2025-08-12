@@ -1,5 +1,5 @@
 {
-  "address": ":8080",
+  "address": ":7742",
   "contentDir": "content",
   "includeDir": "includes",
   "allowInlineHTML": true

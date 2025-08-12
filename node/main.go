@@ -63,7 +63,7 @@ import (
 // ------------------ Config & Constants ------------------
 
 const (
-	DefaultListenAddr = "127.0.0.1:8080"
+	DefaultListenAddr = ":7742"
 	DataDir           = "data"
 	ContentDir        = "data/content"
 	ChainFile         = "data/chain.gz"
