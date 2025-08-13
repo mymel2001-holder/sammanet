@@ -18,6 +18,10 @@ func StartTorHiddenService(listenAddr string) (string, error) {
 	torBase := filepath.Join("data", "tor_hidden")
 	onionDir := filepath.Join(torBase, "onion")
 
+// Ensure tor binary is available
+if _, err := exec.LookPath("tor"); err != nil {
+		return "", fmt.Errorf("tor binary not found in PATH: %v", err)
+}
 	// Prepare onion service directory
 	if err := os.MkdirAll(onionDir, 0o755); err != nil {
 		return "", fmt.Errorf("failed to create onion dir: %w", err)

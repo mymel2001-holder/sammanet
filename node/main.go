@@ -137,7 +137,7 @@ func ensureDirs() error {
 	}
 	if err := os.MkdirAll(DataDir, 0o755); err != nil {
 		return err
-		}
+	}
 	// include dir is where authors commonly keep local includes
 	if err := os.MkdirAll(IncludeDir, 0o755); err != nil {
 		return err
@@ -650,7 +650,7 @@ var (
 	_ = json.NewEncoder(w).Encode(resp)
 }
 	
-	func (n *Node) handlePublishProtocol(w http.ResponseWriter, r *http.Request) {
+func (n *Node) handlePublishProtocol(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
