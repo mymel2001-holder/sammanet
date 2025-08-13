@@ -7,7 +7,7 @@ Sammanet is a decentralized, TOR-based, Markdown-like content network with custo
 - GitHub-Markdown-like webpages, with optional `<script>` and `<style>` support.
 - Secure sandboxed scripting via WASM.
 - All communication over TOR protocol (planned).
-- Custom free-form domains: `my.melody`, `sammanet.hoteles`, `daredevil`, etc.
+- Custom free-form domains: `my.melody`, `sammanet.hoteles`, `daredevil`, etc. (note: this will be the only "downside" of the new Sammanet - lack of this. But it's really benifical because it'll look like normal internet traffic!)
 - Python-based client.
 - Go-based decentralized node.
 - Blockchain-like verification to avoid domain conflicts.
