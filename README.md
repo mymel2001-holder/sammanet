@@ -32,7 +32,7 @@ go build -o sammanet-node main.go
 ## Run Node
 
 * Setup [Kubo](https://www.horan.hk/blog/ipfs-setup/)
-* Install TOR protocol
+* Install TOR protocol and a [hidden service](https://community.torproject.org/onion-services/setup/) (From step 2 onwards, using port 7742 or your port)
 * Run:
 
 """
