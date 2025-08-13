@@ -676,7 +676,7 @@ var (
 		}
 		pm.Sig = sig
 		// persist locally
-		n.storeProtocolMessage(pm)
+		storeProtocolMessage(pm)
 		// broadcast to peers for propagation
 		go func(p ProtocolMessage) {
 			n.broadcastProtocol(p)
@@ -1294,8 +1294,6 @@ func (n *Node) broadcastProtocol(pm ProtocolMessage) {
 }
 
 // In-memory protocol storage for Phase 3
-var protocolMessages []ProtocolMessage
-var protocolMu sync.Mutex
 
 func storeProtocolMessage(pm ProtocolMessage) {
     protocolMu.Lock()
