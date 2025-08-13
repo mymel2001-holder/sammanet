@@ -31,6 +31,10 @@ go build -o sammanet-node main.go
 
 ## Run Node
 
+* Setup [Kubo](https://www.horan.hk/blog/ipfs-setup/)
+* Install TOR protocol
+* Run:
+
 """
 ./sammanet-node
 """
