@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -49,24 +50,35 @@ if _, err := exec.LookPath("tor"); err != nil {
 		return "", fmt.Errorf("failed to write torrc: %w", err)
 	}
 
-	// Launch tor with the generated config
+	// Launch tor with logging
 	cmd := exec.Command("tor", "-f", torrcPath)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	// Detach from terminal; run in background
 	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("failed to start tor: %w", err)
+		return "", fmt.Errorf("failed to start tor: %w; stdout=%q; stderr=%q", err, stdout.String(), stderr.String())
 	}
+	// Reap the process in background to avoid zombies
+	go func() { _ = cmd.Wait() }()
 
 	// Read hostname from the hidden service after Tor initializes
 	hostnamePath := filepath.Join(onionDir, "hostname")
-	// Wait for the hostname file to appear (with a timeout)
-	for i := 0; i < 60; i++ {
-		if b, err := os.ReadFile(hostnamePath); err == nil {
-			hostname := strings.TrimSpace(string(b))
-			if hostname != "" {
-				return hostname, nil
+	// Wait for the hostname file to appear (with a generous timeout)
+	timeout := time.After(90 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-timeout:
+			return "", fmt.Errorf("tor hidden service hostname not available after startup: timeout; stdout=%q; stderr=%q", stdout.String(), stderr.String())
+		case <-ticker.C:
+			if b, err := os.ReadFile(hostnamePath); err == nil {
+				hostname := strings.TrimSpace(string(b))
+				if hostname != "" {
+					return hostname, nil
+				}
 			}
 		}
-		time.Sleep(500 * time.Millisecond)
 	}
-	return "", fmt.Errorf("tor hidden service hostname not available after startup")
 }
