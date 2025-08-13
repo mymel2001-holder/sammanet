@@ -648,6 +648,7 @@ var (
 		resp["ipfs_cid"] = ipfsCid
 	}
 	_ = json.NewEncoder(w).Encode(resp)
+}
 	
 	func (n *Node) handlePublishProtocol(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
