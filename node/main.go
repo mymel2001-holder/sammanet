@@ -27,7 +27,7 @@ import (
 	"sync"
 	"time"
 
-	ipfsapi "github.com/ipfs/go-ipfs-api/v0"
+	ipfsapi "github.com/ipfs/go-ipfs-api@latest"
 
 	"github.com/bytecodealliance/wasmtime-go/v12"
 	bolt "go.etcd.io/bbolt"
