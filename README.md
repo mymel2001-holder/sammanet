@@ -1,4 +1,4 @@
-# Sammanet
+# Sammanet ***DO NOT USE, A TOTAL, MORE SANE AND CLEAN REWRITE IS IN THE WORKS!***
 
 Sammanet is a decentralized, TOR-based, Markdown-like content network with custom scripting via WASM, a free-form domain system, and blockchain-like verification.
 
