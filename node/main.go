@@ -1318,3 +1318,22 @@ func handleProtocolMessages(w http.ResponseWriter, r *http.Request) {
 func init() {
     http.HandleFunc("/protocol/messages", handleProtocolMessages)
 }
+
+// domainFromHost derives a domain key from the HTTP Host header.
+// This is a best-effort mapping: remove port, and return the host as the domain key.
+// If host is empty, return "default".
+func domainFromHost(host string) string {
+    h := host
+    if idx := strings.Index(host, ":"); idx != -1 {
+        h = host[:idx]
+    }
+    if h == "" {
+        return "default"
+    }
+    // Normalize common loopback addresses to a stable key
+    switch h {
+    case "localhost", "127.0.0.1":
+        return "localhost"
+    }
+    return h
+}
